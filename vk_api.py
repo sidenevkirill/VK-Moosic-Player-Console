@@ -2,6 +2,8 @@ import requests
 import logging
 import os
 import json
+import shutil
+import tempfile
 from config import Colors, KATE_USER_AGENT, VK_API_VERSION, TOKEN_FILE, POPULAR_QUERIES
 
 logger = logging.getLogger(__name__)
@@ -419,7 +421,7 @@ class VKMusicManager:
         params = {
             "access_token": self.token,
             "v": VK_API_VERSION,
-            "count": 100,
+            "count": 50,
             "shuffle": 1
         }
         
@@ -498,7 +500,7 @@ class VKMusicManager:
             return {"success": False, "error": f"Ошибка запроса: {e}"}
 
     def download_audio(self, audio_url, filename):
-        """Скачать аудиозапись"""
+        """Скачать аудиозапись в указанный файл"""
         try:
             # Создаем директорию, если её нет
             os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -527,7 +529,6 @@ class VKMusicManager:
                                     suffix=f'{downloaded/1024/1024:.1f}MB/{total_size/1024/1024:.1f}MB'
                                 )
                 
-                self.ui.print_success(f"Аудио успешно скачано: {filename}")
                 return True
             else:
                 self.ui.print_error(f"Ошибка HTTP: {response.status_code}")
@@ -579,3 +580,285 @@ class VKMusicManager:
                 
         except Exception as e:
             return {"success": False, "error": f"Ошибка запроса: {e}"}
+
+    def download_track_with_name(self, track, download_dir="downloads"):
+        """Скачать трек с правильным именем файла"""
+        if not track:
+            self.ui.print_error("Нет информации о треке")
+            return False
+        
+        try:
+            # Получаем информацию о треке
+            artist = track.get('artist', 'Unknown Artist')
+            title = track.get('title', 'Unknown Title')
+            track_url = track.get('url')
+            
+            if not track_url:
+                self.ui.print_error("У трека нет ссылки для скачивания")
+                return False
+            
+            # Очищаем имя файла от недопустимых символов
+            def clean_filename(filename):
+                # Заменяем недопустимые символы
+                invalid_chars = '<>:"/\\|?*'
+                for char in invalid_chars:
+                    filename = filename.replace(char, '_')
+                # Убираем лишние пробелы
+                filename = ' '.join(filename.split())
+                # Ограничиваем длину
+                if len(filename) > 200:
+                    filename = filename[:200]
+                return filename
+            
+            # Создаем имя файла в формате "Исполнитель - Название.mp3"
+            filename = f"{artist} - {title}"
+            filename = clean_filename(filename)
+            filepath = os.path.join(download_dir, f"{filename}.mp3")
+            
+            # Создаем директорию, если её нет
+            os.makedirs(download_dir, exist_ok=True)
+            
+            # Проверяем, не скачан ли уже файл
+            if os.path.exists(filepath):
+                self.ui.print_warning(f"Файл уже существует: {filepath}")
+                overwrite = self.ui.get_input("Перезаписать? (y/n): ").strip().lower()
+                if overwrite != 'y':
+                    # Генерируем уникальное имя
+                    counter = 1
+                    name, ext = os.path.splitext(filepath)
+                    while os.path.exists(filepath):
+                        filepath = f"{name}_{counter}{ext}"
+                        counter += 1
+            
+            headers = self.headers.copy()
+            headers.update({
+                'Referer': 'https://vk.com/',
+                'Origin': 'https://vk.com'
+            })
+            
+            self.ui.print_downloading(f"Скачивание: {artist} - {title}")
+            
+            response = requests.get(track_url, stream=True, headers=headers)
+            if response.status_code == 200:
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size:
+                                self.ui.print_progress_bar(
+                                    downloaded, 
+                                    total_size, 
+                                    prefix='Загрузка:', 
+                                    suffix=f'{downloaded/1024/1024:.1f}MB/{total_size/1024/1024:.1f}MB'
+                                )
+                
+                self.ui.print_success(f"Аудио успешно скачано: {os.path.basename(filepath)}")
+                self.ui.print_info(f"Путь: {filepath}")
+                
+                # Добавляем метаданные ID3 теги если возможно
+                try:
+                    self.add_id3_tags(filepath, track)
+                except:
+                    pass  # Пропускаем если не удалось добавить теги
+                
+                return True
+            else:
+                self.ui.print_error(f"Ошибка HTTP: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            self.ui.print_error(f"Ошибка при скачивании: {e}")
+            return False
+
+    def add_id3_tags(self, filepath, track_info):
+        """Добавить ID3 теги к аудиофайлу"""
+        try:
+            # Пробуем импортировать mutagen
+            import mutagen
+            from mutagen.easyid3 import EasyID3
+            
+            # Пробуем добавить теги через mutagen
+            try:
+                audio = EasyID3(filepath)
+            except mutagen.id3.ID3NoHeaderError:
+                # Если файл не имеет ID3 тегов, создаем новые
+                audio = EasyID3()
+            
+            # Устанавливаем теги
+            artist = track_info.get('artist', '')
+            title = track_info.get('title', '')
+            album = track_info.get('album', '')
+            
+            if artist:
+                audio['artist'] = artist
+            if title:
+                audio['title'] = title
+            if album:
+                audio['album'] = album
+            
+            # Добавляем дополнительные теги если есть
+            if 'genre' in track_info:
+                audio['genre'] = track_info['genre']
+            if 'year' in track_info:
+                audio['date'] = str(track_info['year'])
+            
+            # Сохраняем теги
+            audio.save(filepath)
+            self.ui.print_info("✅ ID3 теги добавлены")
+            
+        except ImportError:
+            # mutagen не установлен
+            self.ui.print_info("⚠️  Для добавления ID3 тегов установите библиотеку mutagen")
+            self.ui.print_info("   pip install mutagen")
+        except Exception as e:
+            # Любая другая ошибка
+            self.ui.print_info(f"⚠️  Не удалось добавить ID3 теги: {e}")
+
+    def download_multiple_tracks(self, tracks, download_dir="downloads"):
+        """Скачать несколько треков"""
+        if not tracks:
+            self.ui.print_error("Нет треков для скачивания")
+            return {"success": False, "downloaded": 0, "failed": 0}
+        
+        total = len(tracks)
+        downloaded = 0
+        failed = 0
+        
+        self.ui.print_info(f"Начинаю скачивание {total} треков...")
+        
+        for i, track in enumerate(tracks, 1):
+            artist = track.get('artist', 'Unknown Artist')
+            title = track.get('title', 'Unknown Title')
+            
+            self.ui.print_info(f"[{i}/{total}] Скачиваю: {artist} - {title}")
+            
+            if self.download_track_with_name(track, download_dir):
+                downloaded += 1
+            else:
+                failed += 1
+        
+        return {
+            "success": True,
+            "downloaded": downloaded,
+            "failed": failed,
+            "total": total
+        }
+
+    def get_formatted_track_info(self, track):
+        """Получить отформатированную информацию о треке"""
+        artist = track.get('artist', 'Unknown Artist')
+        title = track.get('title', 'Unknown Title')
+        
+        # Очистка от лишних символов
+        artist = artist.strip()
+        title = title.strip()
+        
+        # Удаляем повторяющиеся пробелы
+        artist = ' '.join(artist.split())
+        title = ' '.join(title.split())
+        
+        return {
+            'artist': artist,
+            'title': title,
+            'full_name': f"{artist} - {title}",
+            'url': track.get('url'),
+            'duration': track.get('duration', 0),
+            'album': track.get('album', ''),
+            'genre': track.get('genre', ''),
+            'year': track.get('year', ''),
+            'original_track': track
+        }
+
+    def get_track_download_path(self, track, download_dir="downloads"):
+        """Получить путь для скачивания трека с правильным именем"""
+        track_info = self.get_formatted_track_info(track)
+        filename = f"{track_info['artist']} - {track_info['title']}.mp3"
+        
+        # Очистка имени файла
+        def clean_filename(name):
+            invalid_chars = '<>:"/\\|?*'
+            for char in invalid_chars:
+                name = name.replace(char, '_')
+            name = ' '.join(name.split())
+            if len(name) > 200:
+                name = name[:200]
+            return name
+        
+        filename = clean_filename(filename)
+        filepath = os.path.join(download_dir, filename)
+        
+        # Проверяем уникальность имени
+        counter = 1
+        original_filepath = filepath
+        while os.path.exists(filepath):
+            name, ext = os.path.splitext(original_filepath)
+            filepath = f"{name}_{counter}{ext}"
+            counter += 1
+        
+        return filepath
+
+    def test_playlist_access(self):
+        """Тестирование доступа к плейлистам"""
+        if not self.token:
+            return {"success": False, "error": "Токен не установлен"}
+        
+        test_results = []
+        
+        # Тест 1: Проверка базового доступа
+        validity = self.check_token_validity()
+        if validity["valid"]:
+            test_results.append({"test": "Токен", "success": True})
+        else:
+            test_results.append({"test": "Токен", "success": False, "error": validity.get('error_msg')})
+        
+        # Тест 2: Проверка метода getPlaylists
+        url = "https://api.vk.com/method/audio.getPlaylists"
+        params = {
+            "access_token": self.token,
+            "v": VK_API_VERSION,
+            "owner_id": self.user_id,
+            "count": 1
+        }
+        
+        try:
+            response = requests.get(url, params=params, headers=self.headers)
+            data = response.json()
+            
+            if "response" in data:
+                count = data["response"]["count"]
+                test_results.append({"test": "audio.getPlaylists", "success": True, "count": count})
+            else:
+                error_msg = data.get("error", {}).get("error_msg", "Неизвестная ошибка")
+                error_code = data.get("error", {}).get("error_code", 0)
+                test_results.append({"test": "audio.getPlaylists", "success": False, "error": error_msg, "code": error_code})
+        except Exception as e:
+            test_results.append({"test": "audio.getPlaylists", "success": False, "error": str(e)})
+        
+        # Тест 3: Проверка метода audio.get
+        url2 = "https://api.vk.com/method/audio.get"
+        params2 = {
+            "access_token": self.token,
+            "v": VK_API_VERSION,
+            "owner_id": self.user_id,
+            "count": 1
+        }
+        
+        try:
+            response2 = requests.get(url2, params=params2, headers=self.headers)
+            data2 = response2.json()
+            
+            if "response" in data2:
+                count2 = data2["response"]["count"]
+                test_results.append({"test": "audio.get", "success": True, "count": count2})
+            else:
+                error_msg2 = data2.get("error", {}).get("error_msg", "Неизвестная ошибка")
+                error_code2 = data2.get("error", {}).get("error_code", 0)
+                test_results.append({"test": "audio.get", "success": False, "error": error_msg2, "code": error_code2})
+        except Exception as e:
+            test_results.append({"test": "audio.get", "success": False, "error": str(e)})
+        
+        return {"success": True, "tests": test_results}
