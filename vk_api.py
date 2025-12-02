@@ -1,5 +1,7 @@
 import requests
 import logging
+import os
+import json
 from config import Colors, KATE_USER_AGENT, VK_API_VERSION, TOKEN_FILE, POPULAR_QUERIES
 
 logger = logging.getLogger(__name__)
@@ -31,29 +33,103 @@ class VKMusicManager:
         else:
             self.user_id = None
 
-    def load_token_from_file(self, filename=TOKEN_FILE):
+    def load_token_from_file(self, filename=None):
         """Загрузить токен из файла"""
+        if filename is None:
+            filename = TOKEN_FILE
+        
         try:
-            if os.path.exists(filename):
-                with open(filename, 'r', encoding='utf-8') as f:
+            # Ищем файл в нескольких возможных местах
+            possible_paths = [
+                filename,  # Текущая директория
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), filename),  # Рядом с vk_api.py
+                os.path.join(os.getcwd(), filename),  # Текущая рабочая директория
+                os.path.expanduser(f"~/{filename}"),  # Домашняя директория
+                os.path.expanduser(f"~/.config/{filename}"),  # Конфигурационная директория
+            ]
+            
+            found_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    found_path = path
+                    break
+            
+            if found_path:
+                with open(found_path, 'r', encoding='utf-8') as f:
                     token = f.read().strip()
                     if token:
                         self.set_token(token)
-                        self.ui.print_success(f"Токен загружен из файла {filename}")
+                        self.ui.print_success(f"Токен загружен из файла: {found_path}")
                         return True
-            self.ui.print_error(f"Файл {filename} не найден или пуст")
-            return False
+                    else:
+                        self.ui.print_error(f"Файл {found_path} пуст")
+                        return False
+            else:
+                # Создаем пример файла с инструкцией
+                example_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+                self.ui.print_error(f"Файл {filename} не найден!")
+                self.ui.print_info("Искали в следующих местах:")
+                for path in possible_paths:
+                    self.ui.print_info(f"  - {path}")
+                
+                # Предлагаем создать пример файла
+                create_example = self.ui.get_input("\nСоздать пример файла с инструкцией? (y/n): ").strip().lower()
+                if create_example == 'y':
+                    with open(example_file, 'w', encoding='utf-8') as f:
+                        f.write("# Вставьте ваш VK токен на следующей строке\n")
+                        f.write("# Пример токена: vk1.a.ABC123def456...\n")
+                        f.write("# Получить токен можно через меню программы (пункт 3)\n")
+                        f.write("\nВАШ_ТОКЕН_ЗДЕСЬ\n")
+                    self.ui.print_success(f"Пример файла создан: {example_file}")
+                    self.ui.print_info("Откройте этот файл и вставьте ваш токен вместо 'ВАШ_ТОКЕН_ЗДЕСЬ'")
+                
+                return False
         except Exception as e:
             self.ui.print_error(f"Ошибка при чтении файла: {e}")
             return False
 
-    def save_token_to_file(self, filename=TOKEN_FILE):
+    def save_token_to_file(self, filename=None):
         """Сохранить токен в файл"""
+        if filename is None:
+            filename = TOKEN_FILE
+        
+        if not self.token:
+            self.ui.print_error("Нет токена для сохранения")
+            return False
+        
         try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(self.token)
-            self.ui.print_success(f"Токен сохранен в файл {filename}")
-            return True
+            # Сохраняем в несколько мест для удобства
+            save_paths = [
+                os.path.join(os.getcwd(), filename),  # Текущая рабочая директория
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), filename),  # Рядом с vk_api.py
+                os.path.expanduser(f"~/{filename}"),  # Домашняя директория
+            ]
+            
+            success_count = 0
+            for filepath in save_paths:
+                try:
+                    # Создаем директорию, если её нет
+                    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                    
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(self.token)
+                    
+                    if success_count == 0:  # Первый успешный путь
+                        self.ui.print_success(f"Токен сохранен в: {filepath}")
+                    else:
+                        self.ui.print_info(f"Также сохранен в: {filepath}")
+                    
+                    success_count += 1
+                    
+                except Exception as e:
+                    self.ui.print_warning(f"Не удалось сохранить в {filepath}: {e}")
+            
+            if success_count > 0:
+                return True
+            else:
+                self.ui.print_error("Не удалось сохранить токен ни в одном месте")
+                return False
+                
         except Exception as e:
             self.ui.print_error(f"Ошибка при сохранении токена: {e}")
             return False
@@ -70,18 +146,26 @@ class VKMusicManager:
         
         # Проверяем токен сразу
         old_token = self.token
+        old_user_id = self.user_id
         self.set_token(token)
         
         validity = self.check_token_validity()
         if not validity["valid"]:
             self.ui.print_error(f"Токен невалиден: {validity.get('error_msg')}")
             self.token = old_token  # Восстанавливаем старый токен
+            self.user_id = old_user_id
             return False
         
         self.ui.print_success("Токен валиден!")
         
+        # Показываем информацию о пользователе
+        if self.user_info:
+            first_name = self.user_info.get('first_name', '')
+            last_name = self.user_info.get('last_name', '')
+            self.ui.print_info(f"Вы авторизованы как: {first_name} {last_name} (ID: {self.user_id})")
+        
         # Предлагаем сохранить токен
-        save = self.ui.get_input("Сохранить токен в файл? (y/n): ").strip().lower()
+        save = self.ui.get_input("Сохранить токен в файл для будущего использования? (y/n): ").strip().lower()
         if save == 'y':
             self.save_token_to_file()
         
@@ -110,8 +194,21 @@ class VKMusicManager:
                 return {"valid": True, "user_info": self.user_info}
             else:
                 error_msg = data.get("error", {}).get("error_msg", "Неизвестная ошибка")
+                error_code = data.get("error", {}).get("error_code", 0)
+                
+                if error_code == 5:
+                    error_msg = "Токен недействителен (ошибка 5: Invalid token)"
+                elif error_code == 10:
+                    error_msg = "Внутренняя ошибка сервера (ошибка 10)"
+                elif error_code == 28:
+                    error_msg = "Превышено количество запросов (ошибка 28)"
+                
                 return {"valid": False, "error_msg": error_msg}
                 
+        except requests.exceptions.ConnectionError:
+            return {"valid": False, "error_msg": "Нет подключения к интернету"}
+        except requests.exceptions.Timeout:
+            return {"valid": False, "error_msg": "Таймаут при подключении к VK"}
         except Exception as e:
             return {"valid": False, "error_msg": f"Ошибка запроса: {e}"}
 
@@ -204,7 +301,8 @@ class VKMusicManager:
             "access_token": self.token,
             "v": VK_API_VERSION,
             "owner_id": self.user_id,
-            "count": 50
+            "count": 50,
+            "extended": 1
         }
         
         try:
@@ -212,39 +310,104 @@ class VKMusicManager:
             data = response.json()
             
             if "response" in data:
-                return {"success": True, "playlists": data["response"]["items"]}
+                items = data["response"]["items"]
+                
+                # Форматируем данные плейлистов
+                playlists = []
+                for item in items:
+                    playlist = {
+                        'id': item.get('id'),
+                        'owner_id': item.get('owner_id'),
+                        'title': item.get('title', 'Без названия'),
+                        'description': item.get('description', ''),
+                        'count': item.get('count', 0),
+                        'followers': item.get('followers', 0),
+                        'plays': item.get('plays', 0),
+                        'photo': item.get('photo', {}),
+                        'access_key': item.get('access_key', '')
+                    }
+                    playlists.append(playlist)
+                
+                return {"success": True, "playlists": playlists}
             else:
                 error_msg = data.get("error", {}).get("error_msg", "Неизвестная ошибка")
-                return {"success": False, "error": error_msg}
+                self.ui.print_warning(f"Не удалось получить плейлисты: {error_msg}")
+                
+                # Возвращаем пустой список, если плейлистов нет
+                return {"success": True, "playlists": []}
                 
         except Exception as e:
+            self.ui.print_error(f"Ошибка при получении плейлистов: {e}")
             return {"success": False, "error": f"Ошибка запроса: {e}"}
 
-    def get_playlist_tracks(self, playlist_id):
-        """Получить треки из плейлиста"""
-        if not self.token or not self.user_id:
-            return {"success": False, "error": "Токен не установлен или user_id не определен"}
+    def get_playlist_tracks(self, playlist_id, owner_id=None, access_key=None):
+        """Получить треки из плейлиста - ИСПРАВЛЕННЫЙ МЕТОД"""
+        if not self.token:
+            return {"success": False, "error": "Токен не установлен"}
+        
+        # Если owner_id не указан, используем текущего пользователя
+        if owner_id is None:
+            owner_id = self.user_id
         
         url = "https://api.vk.com/method/audio.get"
         params = {
             "access_token": self.token,
             "v": VK_API_VERSION,
             "count": 100,
-            "album_id": playlist_id,
-            "owner_id": self.user_id
+            "owner_id": owner_id
         }
         
+        # Пробуем два разных подхода для получения треков из плейлиста
+        
         try:
-            response = requests.get(url, params=params, headers=self.headers)
-            data = response.json()
+            # ПОДХОД 1: Используем альбом ID (работает для некоторых аккаунтов)
+            params_with_album = params.copy()
+            params_with_album["album_id"] = playlist_id
             
-            if "response" in data:
-                return {"success": True, "audio_list": data["response"]["items"]}
-            else:
-                error_msg = data.get("error", {}).get("error_msg", "Неизвестная ошибка")
-                return {"success": False, "error": error_msg}
+            response1 = requests.get(url, params=params_with_album, headers=self.headers)
+            data1 = response1.json()
+            
+            if "response" in data1 and data1["response"]["items"]:
+                return {"success": True, "audio_list": data1["response"]["items"]}
+            
+            # ПОДХОД 2: Используем access_key если есть
+            if access_key:
+                params_with_access = params.copy()
+                params_with_access["album_id"] = playlist_id
+                params_with_access["access_key"] = access_key
                 
+                response2 = requests.get(url, params=params_with_access, headers=self.headers)
+                data2 = response2.json()
+                
+                if "response" in data2 and data2["response"]["items"]:
+                    return {"success": True, "audio_list": data2["response"]["items"]}
+            
+            # ПОДХОД 3: Пробуем получить все треки и фильтровать (запасной вариант)
+            self.ui.print_warning("Прямой доступ к плейлисту недоступен. Использую обходной путь...")
+            
+            # Получаем все треки пользователя
+            all_tracks_response = requests.get(url, params=params, headers=self.headers)
+            all_tracks_data = all_tracks_response.json()
+            
+            if "response" in all_tracks_data:
+                all_tracks = all_tracks_data["response"]["items"]
+                
+                # Фильтруем треки, которые относятся к нужному плейлисту
+                # В VK API треки могут иметь поле album_id
+                playlist_tracks = []
+                for track in all_tracks:
+                    if str(track.get('album_id', '')) == str(playlist_id):
+                        playlist_tracks.append(track)
+                
+                if playlist_tracks:
+                    return {"success": True, "audio_list": playlist_tracks}
+            
+            # Если ничего не помогло, возвращаем пустой список
+            self.ui.print_info("Плейлист пуст или доступ ограничен")
+            return {"success": True, "audio_list": []}
+            
         except Exception as e:
+            self.ui.print_error(f"Ошибка при получении треков из плейлиста: {e}")
             return {"success": False, "error": f"Ошибка запроса: {e}"}
 
     def get_recommendations(self):
@@ -256,7 +419,7 @@ class VKMusicManager:
         params = {
             "access_token": self.token,
             "v": VK_API_VERSION,
-            "count": 50,
+            "count": 100,
             "shuffle": 1
         }
         
@@ -337,11 +500,15 @@ class VKMusicManager:
     def download_audio(self, audio_url, filename):
         """Скачать аудиозапись"""
         try:
+            # Создаем директорию, если её нет
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            
             headers = self.headers.copy()
             headers.update({
                 'Referer': 'https://vk.com/',
                 'Origin': 'https://vk.com'
             })
+            
             response = requests.get(audio_url, stream=True, headers=headers)
             if response.status_code == 200:
                 total_size = int(response.headers.get('content-length', 0))
@@ -359,8 +526,56 @@ class VKMusicManager:
                                     prefix='Загрузка:', 
                                     suffix=f'{downloaded/1024/1024:.1f}MB/{total_size/1024/1024:.1f}MB'
                                 )
+                
+                self.ui.print_success(f"Аудио успешно скачано: {filename}")
                 return True
-            return False
+            else:
+                self.ui.print_error(f"Ошибка HTTP: {response.status_code}")
+                return False
         except Exception as e:
             self.ui.print_error(f"Ошибка при скачивании: {e}")
             return False
+
+    def get_playlists_with_access(self):
+        """Получить плейлисты с дополнительной информацией"""
+        if not self.token or not self.user_id:
+            return {"success": False, "error": "Токен не установлен или user_id не определен"}
+        
+        url = "https://api.vk.com/method/audio.getPlaylists"
+        params = {
+            "access_token": self.token,
+            "v": VK_API_VERSION,
+            "owner_id": self.user_id,
+            "count": 100,
+            "extended": 1
+        }
+        
+        try:
+            response = requests.get(url, params=params, headers=self.headers)
+            data = response.json()
+            
+            if "response" in data:
+                playlists = data["response"]["items"]
+                
+                # Создаем кэш для быстрого поиска
+                playlist_info = []
+                for playlist in playlists:
+                    info = {
+                        'id': playlist.get('id'),
+                        'owner_id': playlist.get('owner_id'),
+                        'title': playlist.get('title', f'Плейлист #{playlist.get("id")}'),
+                        'description': playlist.get('description', ''),
+                        'count': playlist.get('count', 0),
+                        'followers': playlist.get('followers', 0),
+                        'access_key': playlist.get('access_key', ''),
+                        'url': f"https://vk.com/music/playlist/{playlist.get('owner_id')}_{playlist.get('id')}"
+                    }
+                    playlist_info.append(info)
+                
+                return {"success": True, "playlists": playlist_info, "raw_data": playlists}
+            else:
+                error_msg = data.get("error", {}).get("error_msg", "Неизвестная ошибка")
+                return {"success": False, "error": error_msg}
+                
+        except Exception as e:
+            return {"success": False, "error": f"Ошибка запроса: {e}"}
