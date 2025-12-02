@@ -421,7 +421,7 @@ class VKMusicManager:
         params = {
             "access_token": self.token,
             "v": VK_API_VERSION,
-            "count": 50,
+            "count": 100,
             "shuffle": 1
         }
         
