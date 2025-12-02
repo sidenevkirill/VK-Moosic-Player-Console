@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=VK Moosic Player
+Comment=Консольный плеер для ВКонтакте
+Exec=/home/zorin/Загрузки/VK-Moosic-Player-Console-main/run.sh
+Icon=audio-headphones
+Terminal=true
+Categories=Audio;Music;Player;
