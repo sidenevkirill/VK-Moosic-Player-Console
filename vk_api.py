@@ -421,7 +421,7 @@ class VKMusicManager:
         params = {
             "access_token": self.token,
             "v": VK_API_VERSION,
-            "count": 100,
+            "count": 200,
             "shuffle": 1
         }
         
@@ -450,7 +450,7 @@ class VKMusicManager:
             "access_token": self.token,
             "v": VK_API_VERSION,
             "q": query,
-            "count": 50,
+            "count": 100,
             "auto_complete": 1,
             "sort": 2
         }
@@ -478,7 +478,7 @@ class VKMusicManager:
             "access_token": self.token,
             "v": VK_API_VERSION,
             "q": query,
-            "count": 50,
+            "count": 100,
             "auto_complete": 1
         }
         
