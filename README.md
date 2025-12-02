@@ -52,4 +52,6 @@ VK Moosic Player Console - это консольное приложение дл
 3. ./install_ubuntu.sh
 4. ./run.sh
 
+Либо просто через консоль python3 main.py
+
 Также перед началом первого пункта нужно установить pip3 install python-dotenv
